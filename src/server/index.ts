@@ -1,8 +1,14 @@
 import amqp from "amqplib";
 import { publishJSON } from "../internal/pubsub/publish.js";
-import { ExchangePerilDirect, PauseKey } from "../internal/routing/routing.js";
+import {
+  ExchangePerilDirect,
+  ExchangePerilTopic,
+  GameLogSlug,
+  PauseKey,
+} from "../internal/routing/routing.js";
 import type { PlayingState } from "../internal/gamelogic/gamestate.js";
 import { getInput, printServerHelp } from "../internal/gamelogic/gamelogic.js";
+import { declareAndBind, SimpleQueueType } from "../internal/pubsub/consume.js";
 
 async function main() {
   console.log("Starting Peril server...");
@@ -10,6 +16,14 @@ async function main() {
   const rabbitConnString = "amqp://guest:guest@localhost:5672/";
   const conn: amqp.ChannelModel = await amqp.connect(rabbitConnString);
   const confirm: amqp.ConfirmChannel = await conn.createConfirmChannel();
+
+  await declareAndBind(
+    conn,
+    ExchangePerilTopic,
+    GameLogSlug,
+    `${GameLogSlug}.*`,
+    SimpleQueueType.Durable,
+  );
 
   if (conn) {
     console.log("server connected to RabbitMQ");
@@ -29,22 +43,24 @@ async function main() {
   });
 
   printServerHelp();
+
   for (let i = 0; ; i++) {
     const input: string[] = await getInput();
     if (input.length === 0) {
       continue;
     }
-    if (input[0] === "pause") {
+    const cmd = input[0];
+    if (cmd === "pause") {
       console.log("sending pause message");
       publishJSON(confirm, ExchangePerilDirect, PauseKey, {
         isPaused: true,
       } as PlayingState);
-    } else if (input[0] === "resume") {
+    } else if (cmd === "resume") {
       console.log("sending resume message");
       publishJSON(confirm, ExchangePerilDirect, PauseKey, {
         isPaused: false,
       } as PlayingState);
-    } else if (input[0] === "quit") {
+    } else if (cmd === "quit") {
       console.log("exiting");
       break;
     } else {
