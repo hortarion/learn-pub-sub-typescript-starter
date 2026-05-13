@@ -1,5 +1,10 @@
-import amqp from "amqplib";
-import type { Channel } from "amqplib";
+import amqp, { type Channel } from "amqplib";
+
+export enum AckType {
+  Ack,
+  NackDiscard,
+  NackRequeue,
+}
 
 export enum SimpleQueueType {
   Durable,
@@ -13,14 +18,16 @@ export async function declareAndBind(
   key: string,
   queueType: SimpleQueueType,
 ): Promise<[Channel, amqp.Replies.AssertQueue]> {
-  const channel: amqp.Channel = await conn.createChannel();
-  const queue: amqp.Replies.AssertQueue = await channel.assertQueue(queueName, {
+  const ch = await conn.createChannel();
+
+  const queue = await ch.assertQueue(queueName, {
     durable: queueType === SimpleQueueType.Durable,
-    autoDelete: queueType === SimpleQueueType.Transient,
-    exclusive: queueType === SimpleQueueType.Transient,
+    exclusive: queueType !== SimpleQueueType.Durable,
+    autoDelete: queueType !== SimpleQueueType.Durable,
   });
-  await channel.bindQueue(queueName, exchange, key);
-  return [channel, queue];
+
+  await ch.bindQueue(queue.queue, exchange, key);
+  return [ch, queue];
 }
 
 export async function subscribeJSON<T>(
@@ -29,17 +36,19 @@ export async function subscribeJSON<T>(
   queueName: string,
   key: string,
   queueType: SimpleQueueType,
-  handler: (data: T) => void,
+  handler: (data: T) => AckType,
 ): Promise<void> {
-  const [channel, queue] = await declareAndBind(
+  const [ch, queue] = await declareAndBind(
     conn,
     exchange,
     queueName,
     key,
     queueType,
   );
-  await channel.consume(queue.name, (msg: amqp.ConsumeMessage | null) => {
+
+  await ch.consume(queue.queue, function (msg: amqp.ConsumeMessage | null) {
     if (!msg) return;
+
     let data: T;
     try {
       data = JSON.parse(msg.content.toString());
@@ -47,7 +56,31 @@ export async function subscribeJSON<T>(
       console.error("Could not unmarshal message:", err);
       return;
     }
-    handler(data);
-    channel.ack(msg);
+
+    try {
+      const result = handler(data);
+      switch (result) {
+        case AckType.Ack:
+          ch.ack(msg);
+          console.log("Ack");
+          break;
+        case AckType.NackDiscard:
+          ch.nack(msg, false, false);
+          console.log("NackDiscard");
+          break;
+        case AckType.NackRequeue:
+          ch.nack(msg, false, true);
+          console.log("NackRequeue");
+          break;
+        default:
+          const unreachable: never = result;
+          console.error("Unexpected ack type:", unreachable);
+          return;
+      }
+    } catch (err) {
+      console.error("Error handling message:", err);
+      ch.nack(msg, false, false);
+      return;
+    }
   });
 }
