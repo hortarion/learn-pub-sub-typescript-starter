@@ -1,4 +1,5 @@
 import amqp, { type Channel } from "amqplib";
+import MessagePack from "@msgpack/msgpack";
 
 export enum AckType {
   Ack,
@@ -48,6 +49,7 @@ export async function subscribeJSON<T>(
     key,
     queueType,
   );
+  await ch.prefetch(100);
 
   await ch.consume(queue.queue, async (msg: amqp.ConsumeMessage | null) => {
     if (!msg) return;
@@ -65,15 +67,65 @@ export async function subscribeJSON<T>(
       switch (result) {
         case AckType.Ack:
           ch.ack(msg);
-          console.log("Ack");
           break;
         case AckType.NackDiscard:
           ch.nack(msg, false, false);
-          console.log("NackDiscard");
           break;
         case AckType.NackRequeue:
           ch.nack(msg, false, true);
-          console.log("NackRequeue");
+          break;
+        default:
+          const unreachable: never = result;
+          console.error("Unexpected ack type:", unreachable);
+          return;
+      }
+    } catch (err) {
+      console.error("Error handling message:", err);
+      ch.nack(msg, false, false);
+      return;
+    }
+  });
+}
+
+export async function subscribeMsgPack<T>(
+  conn: amqp.ChannelModel,
+  exchange: string,
+  queueName: string,
+  routingKey: string,
+  SimpleQueueType: SimpleQueueType,
+  handler: (data: T) => Promise<AckType> | AckType,
+): Promise<void> {
+  const [ch, queue] = await declareAndBind(
+    conn,
+    exchange,
+    queueName,
+    routingKey,
+    SimpleQueueType,
+  );
+  await ch.prefetch(100);
+
+  await ch.consume(queue.queue, async (msg: amqp.ConsumeMessage | null) => {
+    if (!msg) return;
+
+    let data: T;
+    try {
+      data = MessagePack.decode(msg.content) as T;
+    } catch (err) {
+      console.error("Could not unmarshal message:", err);
+      return;
+    }
+
+    try {
+      const result = await handler(data);
+      switch (result) {
+        case AckType.Ack:
+          ch.ack(msg);
+          break;
+        case AckType.NackDiscard:
+          ch.nack(msg, false, false);
+          break;
+        case AckType.NackRequeue:
+          ch.nack(msg, false, true);
           break;
         default:
           const unreachable: never = result;

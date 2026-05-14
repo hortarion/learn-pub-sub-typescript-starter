@@ -3,6 +3,7 @@ import {
   clientWelcome,
   commandStatus,
   getInput,
+  getMaliciousLog,
   printClientHelp,
   printQuit,
 } from "../internal/gamelogic/gamelogic.js";
@@ -11,6 +12,7 @@ import {
   ArmyMovesPrefix,
   ExchangePerilDirect,
   ExchangePerilTopic,
+  GameLogSlug,
   PauseKey,
   WarRecognitionsPrefix,
 } from "../internal/routing/routing.js";
@@ -18,7 +20,8 @@ import { GameState } from "../internal/gamelogic/gamestate.js";
 import { commandSpawn } from "../internal/gamelogic/spawn.js";
 import { commandMove } from "../internal/gamelogic/move.js";
 import { handlerMove, handlerPause, handlerWar } from "./handlers.js";
-import { publishJSON } from "../internal/pubsub/publish.js";
+import { publishJSON, publishMsgPack } from "../internal/pubsub/publish.js";
+import type { GameLog } from "../internal/gamelogic/logs.js";
 
 async function main() {
   const rabbitConnString = "amqp://guest:guest@localhost:5672/";
@@ -66,7 +69,7 @@ async function main() {
     WarRecognitionsPrefix,
     `${WarRecognitionsPrefix}.*`,
     SimpleQueueType.Durable,
-    handlerWar(gs),
+    handlerWar(gs, publishCh),
   );
 
   while (true) {
@@ -101,12 +104,52 @@ async function main() {
       printQuit();
       process.exit(0);
     } else if (command === "spam") {
-      console.log("Spamming not allowed yet!");
+      let n: number = 0;
+      if (!words[1]) {
+        console.log("Provide a number 'spam <number>'");
+      }
+      try {
+        n = Number(words[1]);
+      } catch (err) {
+        console.log(words[1], " is not a number");
+        continue;
+      }
+      if (n <= 0) {
+        console.log("n has to be > 0");
+        continue;
+      }
+      for (let i = 0; i < n; i++) {
+        await publishMsgPack(
+          publishCh,
+          ExchangePerilTopic,
+          `${GameLogSlug}.${username}`,
+          getMaliciousLog(),
+        );
+      }
     } else {
       console.log("Unknown command");
       continue;
     }
   }
+}
+
+export function publishGameLog(
+  ch: amqp.ConfirmChannel,
+  username: string,
+  message: string,
+): Promise<void> {
+  const log: GameLog = {
+    currentTime: new Date(),
+    message,
+    username,
+  };
+
+  return publishMsgPack(
+    ch,
+    ExchangePerilTopic,
+    `${GameLogSlug}.${username}`,
+    log,
+  );
 }
 
 main().catch((err) => {
